@@ -69,6 +69,8 @@ export const inject = ["web"];
 
 /** 本 provider 在 ctx.web 里的稳定 id（也写进 cordis.patch.yml 的 web 行）。 */
 const PROVIDER_ID = "workbuddy-fetch";
+/** 提供搜索能力（并被本插件委托注册）的上游插件包名。 */
+const UPSTREAM_PACKAGE = "dsh-workbuddy-websearch";
 /** 云端 webfetch 端点（桌面端 CLI 同款路径）。 */
 const FETCH_PATH = "/agenttool/v1/webfetch";
 /** 桌面端同款 UA；网关对 UA 没有强校验，但保持与官方客户端一致。 */
@@ -751,20 +753,93 @@ export function apply(ctx, config) {
   }
 
   const settings = readSettings();
+
+  // ── 搜索侧：**委托**上游插件注册，不复制它的实现 ───────────────────────────
+  //
+  // 本插件要能**单独安装就同时提供 search + fetch**，所以搜索也得有人注册。
+  // 但搜索的实现（SSE 解析、综述清理、来源提取、双版本凭据、令牌续期）都在
+  // `dsh-workbuddy-websearch` 里，抄一份意味着两条维护线立刻分叉。
+  // 这里改为**调用它自己导出的 `apply()`** —— 它做的事就是往 `ctx.web` 注册
+  // `workbuddy-agentic`，用我们传进去的 ctx，效果与它自己被挂载时一模一样。
+  //
+  // 两件必须处理的事：
+  //  1) **幂等**：上游若也被挂载（两个都装），它会先注册成功，我们再调就撞
+  //     `WEB_DUPLICATE_PROVIDER`。这不是错误，正确反应是**静默跳过** ——
+  //     注册表里已经有一个能用的了，用户不该因为这个看到激活失败。
+  //  2) **失败不致命**：委托失败（上游没装、导出变了）不该拖垮抓取能力。
+  //     抓取是本插件的主业，搜索是增益 —— 前者必须照常工作。
+  const searchStatus = registerSearchByDelegation(ctx);
+
   const line = `[dsh-workbuddy-fetch] registered "${PROVIDER_ID}" into ctx.web`
     + ` (WorkBuddy agenttool webfetch; fallback=${settings.fallback ? "local" : "off"},`
-    + ` timeout=${settings.timeoutMs}ms)`;
+    + ` timeout=${settings.timeoutMs}ms)`
+    + `; search=${searchStatus}`;
   try {
     ctx.root?.logger?.("workbuddy-fetch").info?.(line);
   } catch {}
   console.log(line);
 
-  // ⚠️ 本插件的 bundle patch 必须复述 `searchProvider`，否则整行替换会把搜索字段
-  // 抹成 undefined。副作用是：若 `dsh-workbuddy-websearch` **没装**，`web` 行仍指向
-  // `workbuddy-agentic`，而那个 id 没有任何插件注册 —— `web_search` 会整体报
-  // `WEB_PROVIDER_CONFIGURED_MISSING`。本插件不提供搜索，救不了这个配置，
-  // 所以这里必须**主动说清楚**，否则用户只会看到「搜索莫名其妙坏了」。
-  warnIfSearchProviderDangling(ctx);
+  // 委托没成功时，`web` 行的 `searchProvider` 可能悬空（本插件 patch 复述了它）。
+  // 那会让 `web_search` 整体报 `WEB_PROVIDER_CONFIGURED_MISSING`，必须主动说清楚，
+  // 否则用户只会看到「搜索莫名其妙坏了」。
+  if (searchStatus !== "delegated" && searchStatus !== "already-registered") {
+    warnIfSearchProviderDangling(ctx);
+  }
+}
+
+/**
+ * 通过调用上游插件的 `apply()` 来注册搜索 provider（幂等、失败不致命）。
+ *
+ * @param {object} ctx - 本插件的上下文；原样交给上游，使它在同一个 `ctx.web` 上注册。
+ * @returns {"delegated"|"already-registered"|"upstream-missing"|"failed"} 结果分类，用于日志与自检。
+ */
+function registerSearchByDelegation(ctx) {
+  // 先看注册表里是不是已经有人注册了 —— 比「调一次再捕获异常」更干净：
+  // 上游被挂载时它在我们之前注册，这里直接认领即可，连日志都不该多打一条。
+  const configured = ctx?.web?.searchProviderId;
+  const registry = ctx?.web?.searchProviders;
+  if (typeof configured === "string" && configured !== "" && registry instanceof Map && registry.has(configured)) {
+    return "already-registered";
+  }
+
+  let upstream;
+  try {
+    upstream = requireUpstreamSync();
+  } catch {
+    upstream = undefined;
+  }
+  if (upstream === undefined || typeof upstream.apply !== "function") return "upstream-missing";
+
+  try {
+    upstream.apply(ctx, {}); // 上游的 apply 只接受 ctx；它的配置走它自己的行
+    return "delegated";
+  } catch (error) {
+    // 撞 id = 别人已经注册好了，等于成功。
+    if (error?.code === "WEB_DUPLICATE_PROVIDER") return "already-registered";
+    try {
+      console.warn(
+        `[dsh-workbuddy-fetch] 委托注册搜索 provider 失败（抓取不受影响）：${error?.message ?? String(error)}`,
+      );
+    } catch {}
+    return "failed";
+  }
+}
+
+/**
+ * **同步**加载上游插件模块。
+ *
+ * 为什么必须同步：cordis 的 `apply()` 是同步函数，而这里要在其中完成搜索注册。
+ * `createRequire` 能同步拿到 ESM 模块的命名空间（Node 22 起支持 require(esm)），
+ * 因而不必把 `apply` 改成异步 —— 改成异步会让插件的激活时序变含糊，不值得。
+ */
+function requireUpstreamSync() {
+  for (const anchor of anchorCandidates()) {
+    try {
+      const loaded = nodeRequire(anchor)(UPSTREAM_PACKAGE);
+      if (loaded !== undefined && typeof loaded.apply === "function") return loaded;
+    } catch {}
+  }
+  return undefined;
 }
 
 /**
@@ -790,10 +865,10 @@ function warnIfSearchProviderDangling(ctx) {
     console.warn(
       `[dsh-workbuddy-fetch] 注意：web 行的 searchProvider 指向 "${configured}"，`
         + `但当前没有插件注册该 provider —— web_search 会因此报 WEB_PROVIDER_CONFIGURED_MISSING。\n`
-        + `  原因通常是没有安装 dsh-workbuddy-websearch（本插件只接管抓取，不提供搜索）。\n`
+        + `  原因通常是上游包 dsh-workbuddy-websearch 没装上（本插件委托它注册搜索 provider）。\n`
         + `  解决办法（二选一）：\n`
-        + `    1) 装上搜索插件：dsh plugin --profile <你的 profile> add dsh-workbuddy-websearch\n`
-        + `    2) 或者不要单独装本插件 —— 把 web 行的 searchProvider 改回 deepseek-official`,
+        + `    1) 装上上游：dsh plugin --profile <你的 profile> add dsh-workbuddy-websearch\n`
+        + `    2) 或者把 web 行的 searchProvider 改回 deepseek-official`,
     );
   } catch {}
 }

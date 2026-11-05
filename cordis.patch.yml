@@ -5,12 +5,17 @@
     - id: web-workbuddy-fetch
       name: dsh-workbuddy-fetch
 
-# 2) 把 web 接缝的**抓取** provider 指到本插件。
+# 2) 把 web 接缝的**搜索**与**抓取**两个 provider 都指到 WorkBuddy。
 #
 #    注意 applyEntryPatches 的语义是「按 id 整行替换 config」，不是合并：
-#    这里必须原样复述 searchProvider，否则搜索侧会被这一行抹掉。
-#    searchProvider 的值与 dsh-workbuddy-websearch 的 bundle patch 一致
-#    （workbuddy-agentic）；它没有生效时由该插件自己的 patch 负责指出问题。
+#    dsh-base 的 web 行只有 searchProvider / fetchProvider 两个键，
+#    这里必须**两个都写**，否则漏掉的那个会被抹成 undefined。
+#
+#    - searchProvider: 本插件在 apply() 里**委托** dsh-workbuddy-websearch 的
+#      apply() 来注册 workbuddy-agentic（不复制它的实现）。上游若也被挂载、
+#      已经注册过，本插件会静默认领，不会重复注册。
+#    - fetchProvider: 本插件自己的 workbuddy-fetch。
+#
 #    若用户卸载本插件，bundle patch 随包消失，web 行自动回到上一层
 #    （dsh-base 的 searchProvider: deepseek-official / fetchProvider: http）。
 - id: web

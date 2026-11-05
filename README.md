@@ -1,17 +1,20 @@
 # dsh-workbuddy-fetch
 
-把 DeepSeek Harness 的 **`web_fetch`（抓取）** 也接到 [WorkBuddy](https://www.workbuddy.cn) 的网页抓取网关，
-复用你已经登录的 WorkBuddy 账号 —— 不需要任何 API Key。
+把 DeepSeek Harness 的 **`web_fetch`（抓取）** 接到 [WorkBuddy](https://www.workbuddy.cn) 的网页抓取网关，
+并**一并提供 `web_search`** —— 两个工具都用你已经登录的 WorkBuddy 账号，不需要任何 API Key。
 
-这是 [`dsh-workbuddy-websearch`](https://github.com/arnen7000/DSH-Workbuddy-WebSearch) 的**抓取侧补全**：
-那个插件接管了 `web_search`，把 `web_fetch` 明确留给了 dsh 内置的 `web-fetch-http`（直连目标站点）。
-本插件补上这一半，两个可以同时装、互不干扰 —— 它们注册的 provider 分属 **两个不同的注册表**。
+背景：[`dsh-workbuddy-websearch`](https://github.com/arnen7000/DSH-Workbuddy-WebSearch) 接管了 `web_search`，
+但明确把 `web_fetch` 留给了 dsh 内置的 `web-fetch-http`（直连目标站点）。
+本插件补上抓取这一半；同时为了**装一个包就两个工具都能用**，它会在启动时**委托**上游插件
+注册搜索 provider（调它自己的 `apply()`，不复制实现）。
 
-> ⚠️ **本插件只提供 `web_fetch`，不提供 `web_search`。**
-> 它**不含**搜索 provider，也**不会**接管搜索；`web_search` 仍由
-> `dsh-workbuddy-websearch` 负责。本插件的 `cordis.patch.yml` 里会复述
-> `searchProvider: workbuddy-agentic`，但那只是**避免整行替换时把搜索字段抹掉**
-> （见下方「和搜索插件的 patch 会互相覆盖吗」），本插件自己并不实现搜索。
+| 工具 | 谁实现 | 装本插件后 |
+|---|---|---|
+| `web_search` | 上游 `dsh-workbuddy-websearch` 的实现 | ✅ 可用（本插件委托注册） |
+| `web_fetch` | 本插件自己的 provider | ✅ 可用（云网关 + 本地回落） |
+
+> 💡 **只装本插件就够了**：上游作为 `peerDependency` 会被一起装上。
+> 若你**也**单独装了上游插件，两个不会打架 —— 本插件发现搜索已注册就静默跳过。
 
 ## 目录
 
@@ -19,7 +22,7 @@
 - [安装](#安装)
 - [配置](#配置)
 - [行为细节](#行为细节)
-- [和搜索插件的 patch 会互相覆盖吗](#和搜索插件的-patch-会互相覆盖吗)
+- [和搜索插件一起装会冲突吗](#和搜索插件一起装会冲突吗)
 - [已知边界](#已知边界)
 - [安全](#安全)
 - [卸载](#卸载)
@@ -54,30 +57,48 @@ web_fetch
 > dsh 原来的 `web_fetch` 一直是 `TypeError: fetch failed`；装本插件后，
 > 那些网关支持的站点**第一次变得可抓**。
 
+### `web_search` 是怎么来的
+
+本插件**不复制**上游的搜索实现。启动时它调用上游包导出的 `apply(ctx)`，
+让上游自己把 `workbuddy-agentic` 注册进同一个 `ctx.web` —— 效果与上游被单独挂载完全相同。
+这样做的好处是：SSE 解析、综述清理、来源提取、双版本凭据、令牌续期**只有一条维护线**，
+上游修 bug 你自动受益。
+
 ## 安装
 
-前置有两条：
+前置只有一条：**本机已安装并登录 WorkBuddy 桌面端**（国内版或国际版任一）。
 
-1. 本机已安装**并登录** WorkBuddy 桌面端（国内版或国际版任一）。
-2. 已安装 [`dsh-workbuddy-websearch`](https://github.com/arnen7000/DSH-Workbuddy-WebSearch) ——
-   本插件复用它的平台定位、凭据解密、区域绑定与令牌续期，**不重复实现一遍**。
-   这不只是省代码：两边的「用哪一版账号」判定因此必然一致，不会出现
-   「搜索扣国际版、抓取扣国内版」这种账务意外。
+上游 [`dsh-workbuddy-websearch`](https://github.com/arnen7000/DSH-Workbuddy-WebSearch)
+是 **`peerDependency`**。注意它**不会**被自动装上（dsh 的 profile 关掉了
+`autoInstallPeers`），所以：
 
 ```bash
-# 以本机目录安装（插件市场里搜 workbuddy-fetch 也可以）
+# ① 装上游（提供凭据能力 + 搜索实现）
+dsh plugin --profile <你的 profile> add dsh-workbuddy-websearch
+
+# ② 装本插件
 dsh plugin --profile <你的 profile> add <本插件目录的绝对路径>
 ```
 
-重启 dsh 后生效。核验（应看到 `fetchProvider: workbuddy-fetch`）：
+⚠️ **顺序最好别反。** 若先装本插件，上游会以「未声明 dsh.bundle 的普通依赖」
+身份被 pnpm 链进来，而**不会**进入 profile 的 `bundles` 列表。本插件仍能正常
+委托它注册搜索（它是个普通包，能 import 到就行），但上游自己的
+`web-workbuddy-websearch` 那一行不会挂载 —— 少一层显式来源，排查时更难看清。
+先装上游、再装本插件，两层 bundles 都在，`--dump-config` 里一目了然。
+
+重启 dsh 后生效。核验（应同时看到两个 provider）：
 
 ```bash
-dsh --profile <你的 profile> --dump-config
+dsh --profile <你的 profile> --dump-config | grep -A4 "id: web"
+# searchProvider: workbuddy-agentic
+# fetchProvider: workbuddy-fetch
 ```
 
-> ⚠️ **同一个 fetch provider id 只能由一个插件注册。** 若你还装着注册了
-> `workbuddy-fetch` 的其他插件（旧版、fork），`ctx.web` 会按 id 去重，
-> 后注册的那个静默不激活。撞上时本插件会直接打印「该 id 已被占用」和排查步骤。
+> ⚠️ **同一个 provider id 只能由一个插件注册。** 若你还装着注册了
+> `workbuddy-fetch` 或 `workbuddy-agentic` 的其他插件（旧版、fork），
+> `ctx.web` 会按 id 去重。本插件对这两种撞车都做了处理：
+> 搜索撞车时**静默认领**（别人已经注册好了，等于成功），
+> 抓取撞车时才报错并给出排查步骤。
 
 ## 配置
 
@@ -130,25 +151,33 @@ dsh --profile <你的 profile> --dump-config
 
 ## 和搜索插件的 patch 会互相覆盖吗
 
-**内容上不会，但机制上有一个必须知道的坑。**
+**会 —— 而且装错顺序会让抓取静默失效。** 这是本插件最需要注意的一条。
 
-`web` 行的 patch 语义是「**按 id 整行替换 `config`**」，不是深合并。
-所以任何插件的 `cordis.patch.yml` 只要写了 `- id: web`，就必须把
-`searchProvider` 和 `fetchProvider` **两个字段都写全**，否则没写的那个会被抹成
-`undefined`。两个插件的 patch 都遵守了这一点：
+`web` 行的 patch 语义是「**按 id 整行替换 `config`**」，不是深合并。谁后装，
+谁的 `config` 就是最终生效的那一份：
 
-| 插件 | patch 里写了 | 效果 |
+| 安装顺序 | 最终 `web` 行 | 结果 |
 |---|---|---|
-| `dsh-workbuddy-websearch` | `searchProvider: workbuddy-agentic` + `fetchProvider: http` | 搜索走它；抓取保持 dsh 原生 |
-| `dsh-workbuddy-fetch`（本插件） | `searchProvider: workbuddy-agentic` + `fetchProvider: workbuddy-fetch` | 抓取走它；搜索字段被**原样复述**，不受影响 |
+| 只装本插件 | `search=workbuddy-agentic` / `fetch=workbuddy-fetch` | ✅ 搜索、抓取都走 WorkBuddy |
+| 上游先、本插件后 | `search=workbuddy-agentic` / `fetch=workbuddy-fetch` | ✅ 正确 |
+| **本插件先、上游后** | `search=workbuddy-agentic` / **`fetch=http`** | ⚠️ **抓取被打回 dsh 原生** |
 
-两个都装时，后装的那层 patch 覆盖前者；因为两边写的是同一组值，最终结果正确。
+最后一行是真实存在的坑：上游的 patch 里写着 `fetchProvider: http`（它当初假设
+没人会接管抓取），后装它就会把本插件的 `workbuddy-fetch` 覆盖掉。
+**本插件不会报错，抓取只是悄悄变回直连** —— 这正是最难发现的一类故障。
 
-> ⚠️ **但本插件不能单独用。** 如果装了本插件而**没装** `dsh-workbuddy-websearch`，
-> `web` 行仍指向 `workbuddy-agentic` —— 那个 id 没有任何插件注册，`web_search`
-> 会整体报 `WEB_PROVIDER_CONFIGURED_MISSING`（而本插件不提供搜索，救不了）。
-> 这种情况本插件启动时会**主动打一行警告**并给出两种修法，不会让你只看到
-> 「搜索莫名其妙坏了」。
+**怎么避免**：装的时候**先装上游，再装本插件**。装完用这条命令核验：
+
+```bash
+dsh --profile <你的 profile> --dump-config | grep -A4 "id: web"
+# 两个字段都必须是 workbuddy-* 才算对
+```
+
+万一顺序反了：重装一次本插件（`remove` 后再 `add`）即可把 patch 层顶回最后。
+
+> 💡 上游作者已在它的 README 里写明「只管搜索，不管抓取」，
+> 所以这个覆盖不是 bug，是**两个插件各自合理、组合起来才出现**的层叠问题。
+> 本插件选择在文档里明说，而不是偷偷改别人的配置。
 
 ## 已知边界
 
