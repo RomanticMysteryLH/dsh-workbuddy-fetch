@@ -1,0 +1,67 @@
+{
+  "name": "dsh-workbuddy-fetch",
+  "version": "0.1.0",
+  "description": "把 web_fetch 也接到 WorkBuddy 的 webfetch 网关：复用 DSH-Workbuddy-WebSearch 的登录态与区域绑定，被拒时自动回落 dsh 本地抓取",
+  "versionNote": "0.1.0：首版。在 dsh-workbuddy-websearch 之上扩展抓取侧：注册 fetch provider workbuddy-fetch，调用 WorkBuddy 网关 /agenttool/v1/webfetch，复用同一份登录态与区域绑定；网关拒绝或不可用时按配置回落到 dsh 自带的 http 抓取，保证 web_fetch 能力不倒退。",
+  "author": "RomanticMysteryLH",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RomanticMysteryLH/dsh-workbuddy-fetch.git"
+  },
+  "homepage": "https://github.com/RomanticMysteryLH/dsh-workbuddy-fetch#readme",
+  "bugs": {
+    "url": "https://github.com/RomanticMysteryLH/dsh-workbuddy-fetch/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "workbuddy",
+    "web-fetch"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.2"
+  },
+  "os": [
+    "win32",
+    "darwin"
+  ],
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CREDITS.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.2",
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible"
+      }
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "dsh-workbuddy-websearch": ">=0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-workbuddy-websearch": {
+      "optional": false
+    }
+  },
+  "license": "MIT"
+}

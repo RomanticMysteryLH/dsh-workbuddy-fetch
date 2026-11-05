@@ -1,0 +1,60 @@
+MIT License
+
+Copyright (c) 2026 RomanticMysteryLH
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+This project builds on the work of others. Portions of this software are
+derived from the projects listed below, each distributed under the MIT License.
+The original copyright notices are reproduced here as required by that license.
+
+dsh-workbuddy-websearch
+  https://github.com/arnen7000/DSH-Workbuddy-WebSearch
+  Copyright (c) 2026 XingLang & WorkBuddy (小研)
+  Licensed under the MIT License.
+  Used as a runtime peer dependency (its platform, credential, and region
+  capabilities are called, not vendored), and as the reference for the region
+  selection and credential-state logic reimplemented in buildFallbackBridge().
+
+dsh-workbuddy-connect
+  https://github.com/corrinehu/dsh-workbuddy-connect
+  Copyright (c) 2026 Corrine Hu
+  Licensed under the MIT License.
+  Not depended on directly; its CredentialStore is reached only indirectly,
+  through dsh-workbuddy-websearch's optional enhancement path.
+
+@deepseek-ai/dsh-web and @deepseek-ai/dsh-web-fetch-http
+  Copyright (c) DeepSeek
+  Licensed under the MIT License.
+  Contract-level dependencies reached through the harness itself; no source
+  is copied. The local-fetch fallback instantiates web-fetch-http's exported
+  HttpFetchProvider.
+
+WorkBuddy desktop application (app.asar)
+  Copyright (c) Tencent / WorkBuddy
+  No code is copied, bundled, or modified. The /agenttool/v1/webfetch request
+  shape was determined by inspecting the locally installed application, and
+  this plugin only uses that documented-by-inspection endpoint together with
+  the user's own sign-in state. All rights to the application, its protocols,
+  and its endpoints remain with their owners.
+
+See CREDITS.md for the per-source breakdown of what was referenced and what is
+original to this project.

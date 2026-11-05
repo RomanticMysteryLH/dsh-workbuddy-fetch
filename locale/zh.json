@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WorkBuddy 网页抓取",
+    "description": "让 web_fetch 走 WorkBuddy 登录态：云端抽取正文为 markdown，网关不支持的站点自动回落 dsh 本地抓取。"
+  }
+}

@@ -1,0 +1,30 @@
+# macOS / Windows 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 依赖与构建产物（本插件无构建步骤，正常不该出现）
+node_modules/
+dist/
+*.tgz
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+.tmp/
+.cache/
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 本地环境覆盖（切勿提交任何本机路径或凭据）
+.env
+.env.*
+!.env.example
+local.settings.json

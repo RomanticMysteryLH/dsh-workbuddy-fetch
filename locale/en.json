@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WorkBuddy Web Fetch",
+    "description": "Routes web_fetch through your WorkBuddy sign-in: the gateway extracts page bodies as markdown, and sites it refuses fall back to dsh's local fetcher."
+  }
+}
