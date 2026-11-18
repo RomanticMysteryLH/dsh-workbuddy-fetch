@@ -64,8 +64,20 @@ import { createRequire } from "node:module";
 
 /** Cordis 插件名（loader 诊断用）。 */
 export const name = "workbuddy-fetch";
-/** 依赖的服务接缝：web 抓取能力（@deepseek-ai/dsh-web）。 */
-export const inject = ["web"];
+/**
+ * 依赖的服务接缝。
+ *
+ * - `web`：抓取 provider 注册 + 搜索委托的落点，**必需**。
+ * - `loader`：**只用于判断上游插件行是否已挂载**（见 `isUpstreamEntryMounted`）。
+ *   写成对象形式 `{ loader: null }` 是 cordis 的**可选注入**语法：服务在时
+ *   `ctx.loader` 可用，不在时也不会让本插件激活失败 —— 而 `loader` 缺失时
+ *   `isUpstreamEntryMounted` 会保守地返回 `true`（假设上游在，由它自己注册），
+ *   避免重复注册。
+ *
+ * 注：数组形式 `["web", "loader"]` 是**必需注入**，loader 不可用会让整行激活失败，
+ * 那会把「判断不了」升级成「起不来」，得不偿失。
+ */
+export const inject = { web: null, loader: null };
 
 /** 本 provider 在 ctx.web 里的稳定 id（也写进 cordis.patch.yml 的 web 行）。 */
 const PROVIDER_ID = "workbuddy-fetch";
@@ -769,11 +781,13 @@ export function apply(ctx, config) {
   //  2) **失败不致命**：委托失败（上游没装、导出变了）不该拖垮抓取能力。
   //     抓取是本插件的主业，搜索是增益 —— 前者必须照常工作。
   const searchStatus = registerSearchByDelegation(ctx);
+  const healStatus = enforceFetchProviderSelection(ctx);
 
   const line = `[dsh-workbuddy-fetch] registered "${PROVIDER_ID}" into ctx.web`
     + ` (WorkBuddy agenttool webfetch; fallback=${settings.fallback ? "local" : "off"},`
     + ` timeout=${settings.timeoutMs}ms)`
-    + `; search=${searchStatus}`;
+    + `; search=${searchStatus}`
+    + `; fetchSelection=${healStatus}`;
   try {
     ctx.root?.logger?.("workbuddy-fetch").info?.(line);
   } catch {}
@@ -782,20 +796,80 @@ export function apply(ctx, config) {
   // 委托没成功时，`web` 行的 `searchProvider` 可能悬空（本插件 patch 复述了它）。
   // 那会让 `web_search` 整体报 `WEB_PROVIDER_CONFIGURED_MISSING`，必须主动说清楚，
   // 否则用户只会看到「搜索莫名其妙坏了」。
-  if (searchStatus !== "delegated" && searchStatus !== "already-registered") {
+  //
+  // 注意 `upstream-mounted` 是**正常且最常见**的情形（两个都装）：上游行在、
+  // 由它自己注册，我们不查注册表也不报警 —— 并发激活下这一刻可能还没注册上。
+  if (searchStatus !== "delegated"
+    && searchStatus !== "already-registered"
+    && searchStatus !== "upstream-mounted") {
     warnIfSearchProviderDangling(ctx);
+  }
+}
+
+/**
+ * 把 `ctx.web.fetchProviderId` 顶回本插件 ——**免疫 patch 层叠顺序**。
+ *
+ * 为什么需要这一步：`web` 行的 patch 是「按 id 整行替换 config」，谁后装谁生效。
+ * 上游插件的 patch 写着 `fetchProvider: http`，所以「本插件先装、上游后装」时，
+ * 上游那层会把 `fetchProvider` 覆盖回 `http` —— 本插件的抓取 provider 明明注册好了，
+ * 却永远不会被选中，而且**不报任何错**。这是最难发现的一类故障。
+ *
+ * 修法不是改别人的 patch（那既不该做也管不到），而是**注册完成后自己纠正选择**：
+ * `WebRuntime` 把 `fetchProviderId` 放在实例字段上，`fetch()` 每次调用都实时读它，
+ * 所以这里赋值即刻生效。
+ *
+ * 只有在「已配置的 id 不是我们自己、且我们的 provider 确实注册成功」时才动手 ——
+ * 用户若刻意配了别的 fetch provider，本插件不该抢。
+ *
+ * @returns {"already-selected"|"healed"|"skipped"} 结果分类，用于日志。
+ */
+function enforceFetchProviderSelection(ctx) {
+  try {
+    const web = ctx?.web;
+    if (web === undefined || web === null) return "skipped";
+    // 我们的 provider 真的注册上了吗？（撞 id 失败时这里可能没有）
+    const registry = web.fetchProviders;
+    if (registry instanceof Map && !registry.has(PROVIDER_ID)) return "skipped";
+    if (web.fetchProviderId === PROVIDER_ID) return "already-selected";
+    const previous = web.fetchProviderId;
+    web.fetchProviderId = PROVIDER_ID;
+    try {
+      console.warn(
+        `[dsh-workbuddy-fetch] web 行的 fetchProvider 原本是 "${previous ?? "(未配置)"}"，`
+          + `已纠正为 "${PROVIDER_ID}"。\n`
+          + `  这通常意味着上游 dsh-workbuddy-websearch 是在本插件之后安装的：`
+          + `它的 patch 会把 fetchProvider 写回 http。本插件已自行修正，无需手动处理。`,
+      );
+    } catch {}
+    return "healed";
+  } catch {
+    return "skipped";
   }
 }
 
 /**
  * 通过调用上游插件的 `apply()` 来注册搜索 provider（幂等、失败不致命）。
  *
+ * ⚠️ **只在「上游没被挂载」时才委托。** 这是修掉一个真实回归后的规则：cordis 的
+ * 插件激活是**并发**的，不是按 bundles 顺序串行。上游插件行（本机在 bundles 第 15 位）
+ * 和我们（第 19 位）几乎同时 activate —— 我们执行到这里时，上游可能还没往
+ * `ctx.web` 注册，于是「查注册表」看到的是空的，误判为没人管，就去调它的 `apply()`；
+ * 随后上游自己也 activate 并注册，两个撞 `WEB_DUPLICATE_PROVIDER`，
+ * 用户每次启动都会看到一条吓人的激活失败警告。
+ *
+ * 正确判据不是「注册表里有没有」，而是「loader 里有没有这个插件行」：
+ * 有 → 它自己会注册，我们不插手；没有 → 才由我们代劳。
+ *
  * @param {object} ctx - 本插件的上下文；原样交给上游，使它在同一个 `ctx.web` 上注册。
- * @returns {"delegated"|"already-registered"|"upstream-missing"|"failed"} 结果分类，用于日志与自检。
+ * @returns {"delegated"|"already-registered"|"upstream-mounted"|"upstream-missing"|"failed"}
+ *   结果分类，用于日志与自检。
  */
 function registerSearchByDelegation(ctx) {
-  // 先看注册表里是不是已经有人注册了 —— 比「调一次再捕获异常」更干净：
-  // 上游被挂载时它在我们之前注册，这里直接认领即可，连日志都不该多打一条。
+  // 1) 上游插件行已挂载 → 由它自己注册，本插件完全不碰搜索。
+  //    这条必须放最前面：并发激活下「查注册表」不可靠，查 loader 才可靠。
+  if (isUpstreamEntryMounted(ctx)) return "upstream-mounted";
+
+  // 2) 注册表里已经有该 id（别人抢先注册，或上游已 activate 完）→ 认领，不重复。
   const configured = ctx?.web?.searchProviderId;
   const registry = ctx?.web?.searchProviders;
   if (typeof configured === "string" && configured !== "" && registry instanceof Map && registry.has(configured)) {
@@ -843,6 +917,35 @@ function requireUpstreamSync() {
 }
 
 /**
+ * 上游插件行是否已挂在当前 loader 上。
+ *
+ * 用 loader 的 entry 列表判断，而不是看 provider 注册表 —— 原因见
+ * {@link registerSearchByDelegation} 的说明：并发激活下注册表可能还没填，
+ * 但 entry 在 activate 之前就已存在。
+ *
+ * 拿不到 `ctx.loader`（理论上不该发生）时返回 **true**：宁可假设上游在、
+ * 由它自己注册，也不要冒险重复注册制造一条启动期错误。
+ *
+ * @param {object} ctx - 本插件的上下文。
+ * @returns {boolean} 上游行是否已挂载。
+ */
+function isUpstreamEntryMounted(ctx) {
+  try {
+    const loader = ctx?.loader;
+    if (typeof loader?.entries !== "function") return true;
+    for (const entry of loader.entries()) {
+      const entryName = entry?.options?.name;
+      if (typeof entryName !== "string") continue;
+      // 包名精确匹配，或它的子路径（如 `dsh-workbuddy-websearch/platform`）。
+      if (entryName === UPSTREAM_PACKAGE || entryName.startsWith(`${UPSTREAM_PACKAGE}/`)) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * 检查 `web` 行声明的 `searchProvider` 是否真的有人注册。
  *
  * **只读注册表，不发请求。** `ctx.web`（`WebRuntime`）把两个 provider 表作为实例
@@ -887,4 +990,7 @@ export const __internals = {
   shouldFallback,
   translateUpstreamError,
   WorkBuddyFetchProvider,
+  isUpstreamEntryMounted,
+  registerSearchByDelegation,
+  enforceFetchProviderSelection,
 };
