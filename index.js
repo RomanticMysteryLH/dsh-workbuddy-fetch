@@ -807,21 +807,38 @@ export function apply(ctx, config) {
 }
 
 /**
- * 把 `ctx.web.fetchProviderId` 顶回本插件 ——**免疫 patch 层叠顺序**。
+ * 把 `web` 行的 `fetchProvider` 顶回本插件 ——**免疫 patch 层叠顺序**。
  *
  * 为什么需要这一步：`web` 行的 patch 是「按 id 整行替换 config」，谁后装谁生效。
- * 上游插件的 patch 写着 `fetchProvider: http`，所以「本插件先装、上游后装」时，
- * 上游那层会把 `fetchProvider` 覆盖回 `http` —— 本插件的抓取 provider 明明注册好了，
- * 却永远不会被选中，而且**不报任何错**。这是最难发现的一类故障。
+ * 其它插件（`dsh-codex-subscription`、上游 `dsh-workbuddy-websearch` 等）的 patch 会把
+ * `fetchProvider` 写成它们自己的 id，于是「本插件先装、它们后装」时，本插件的抓取
+ * provider 明明注册好了却永远不会被选中，而且**不报任何错**。这是最难发现的一类故障。
  *
- * 修法不是改别人的 patch（那既不该做也管不到），而是**注册完成后自己纠正选择**：
- * `WebRuntime` 把 `fetchProviderId` 放在实例字段上，`fetch()` 每次调用都实时读它，
- * 所以这里赋值即刻生效。
+ * ── 为什么不能写 `web.fetchProviderId` ──
  *
- * 只有在「已配置的 id 不是我们自己、且我们的 provider 确实注册成功」时才动手 ——
- * 用户若刻意配了别的 fetch provider，本插件不该抢。
+ * 早先版本假设 `WebRuntime` 有个可写的 `fetchProviderId` 实例字段，赋值即可纠正。
+ * 那是错的：`@deepseek-ai/dsh-web` 的 `WebRuntime` 只有 `searchProviders` /
+ * `fetchProviders` 两个 Map 和 `fetchProviderEnv`，**没有 `fetchProviderId`**。
+ * 给不存在的属性赋值不会抛错，也不会生效 —— 于是这个「修复」一直是个空操作。
  *
- * @returns {"already-selected"|"healed"|"skipped"} 结果分类，用于日志。
+ * 更麻烦的是它还有反向副作用：`dsh-codex-subscription` 的
+ * `configuredFetchProviderId()` 第一行就是 `if ("fetchProviderId" in web) return web.fetchProviderId`。
+ * 我们那一次赋值凭空创建了这个字段，于是 codex 把它当成了「用户配置」读走，
+ * 反而让 codex 的路由永久认定配置是 `workbuddy-fetch`。空操作 + 污染别人，两头都不对。
+ *
+ * ── 正确写法 ──
+ *
+ * 真正的选择逻辑在 `WebRuntime.selectFetchProvider()`：
+ *
+ * ```js
+ * const configuredId = this.config.fetchProvider.get() ?? this.fetchProviderEnv;
+ * ```
+ *
+ * 即每次调用都实时读 `ctx.web.config.fetchProvider`（cordis 的响应式配置对象）。
+ * 所以要纠正的就是它。只有在「已配置的 id 不是我们自己、且我们的 provider 确实注册
+ * 成功」时才动手 —— 用户若刻意配了别的 fetch provider，本插件不该抢。
+ *
+ * @returns {"already-selected"|"healed"|"skipped"|"no-config"} 结果分类，用于日志。
  */
 function enforceFetchProviderSelection(ctx) {
   try {
@@ -830,15 +847,35 @@ function enforceFetchProviderSelection(ctx) {
     // 我们的 provider 真的注册上了吗？（撞 id 失败时这里可能没有）
     const registry = web.fetchProviders;
     if (registry instanceof Map && !registry.has(PROVIDER_ID)) return "skipped";
-    if (web.fetchProviderId === PROVIDER_ID) return "already-selected";
-    const previous = web.fetchProviderId;
-    web.fetchProviderId = PROVIDER_ID;
+
+    // 读当前配置：`WebRuntime.selectFetchProvider()` 用的就是这个表达式。
+    const field = web.config?.fetchProvider;
+    const readCurrent = () => {
+      if (typeof field?.get === "function") return field.get();
+      return undefined;
+    };
+    const previous = readCurrent();
+    if (previous === PROVIDER_ID) return "already-selected";
+
+    // 写回。cordis 的响应式配置对象提供 `set()`；没有就只能放弃并留下诊断，
+    // 不冒险直接改内部状态（那正是上一版犯的错）。
+    if (typeof field?.set !== "function") {
+      try {
+        console.warn(
+          `[dsh-workbuddy-fetch] 无法纠正 web 行的 fetchProvider（当前是 "${previous ?? "(未配置)"}"）：`
+            + `该配置对象没有 set()。本插件的抓取 provider 已注册但不会被选中，`
+            + `请手动把 profile 里 web 行的 fetchProvider 改为 "${PROVIDER_ID}"。`,
+        );
+      } catch {}
+      return "no-config";
+    }
+    field.set(PROVIDER_ID);
     try {
       console.warn(
         `[dsh-workbuddy-fetch] web 行的 fetchProvider 原本是 "${previous ?? "(未配置)"}"，`
           + `已纠正为 "${PROVIDER_ID}"。\n`
-          + `  这通常意味着上游 dsh-workbuddy-websearch 是在本插件之后安装的：`
-          + `它的 patch 会把 fetchProvider 写回 http。本插件已自行修正，无需手动处理。`,
+          + `  这通常意味着有别的插件（如 dsh-codex-subscription）在本插件之后安装，`
+          + `它的 patch 把 fetchProvider 写成了自己的 id。本插件已自行修正，无需手动处理。`,
       );
     } catch {}
     return "healed";
